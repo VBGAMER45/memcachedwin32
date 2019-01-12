@@ -1,0 +1,60 @@
+Orignally found at
+http://code.jellycan.com/memcached/ by Brodie
+
+
+
+
+This page contains a modified version of memcached (v1.2.5 and v1.2.6) and libevent (v1.4.4) that builds on Windows.
+
+Building libevent should work out of the box. Building memcached should also work out of the box, but it requires libevent to be first built beside it in a directory called "libevent". For example:
+
+/src/libevent
+/src/memcached
+
+The included project files are created with Visual Studio 2003, but should import fine into VS2005 and VS2008.
+
+These projects are based on the existing win32 builds of the two projects. Just fixed so that they work. Neither library has been modified from the respective released version other than to add win32 required changes. I released them here simply because I found no buildable win32 versions for these projects.
+
+Note in particular that I provide no promises and no support.
+
+Last updated: 25 Jul 2009
+Files
+libevent 1.4.12
+
+Happily, libevent will now build out of the box on Windows (at least with VC2003 and VC2008, I haven't tested others). I don't like their projects though, so I created a cmake build system for it.
+
+cmake files: libevent-cmake.zip
+
+How to use:
+
+    Download and install cmake 2.6 for Windows
+
+    Download libevent 1.4.12 from the libevent website and extract all files
+
+    Download the libevent-cmake package above and extract it into the libevent directory created above
+
+    Open a command prompt in the libevent top directory
+
+    Execute the vcvars32.bat or vsvars32.bat or vsvars64.bat file from the Visual Studio directory to allow building on the command line.
+
+    e.g. "C:\Program Files\Microsoft Visual Studio .NET 2003\Common7\Tools\vsvars32.bat"
+
+    Call the cross-build.cmd batch file suppling the version of Visual Studio as the first parameter. See the contents of the cross-build.cmd file for all possibilities.
+
+    This will build the Visual Studio project and solution files for libevent, samples and tests and then build them for all configurations (debug, release, etc). All generated files are stored in a sub-directory using the name of the tools.
+
+    e.g. "cross-build.cmd msvc-7.1" for Visual Studio 7 .NET 2003. All files will be in the "msvc-7.1" subdirectory.
+
+    You can link to the library in the appropriate lib directory: libevent/{toolset}/lib/{config}/libevent.lib
+
+    e.g. libevent/msvc-7.1/lib/release/libevent.lib
+
+    You can run the samples and tests in the appropriate bin directory: libevent/{toolset}/bin/{config}/
+
+    e.g. libevent/msvc-7.1/bin/debug/regress.exe 
+
+Notes:
+
+    Although cmake is designed to create cross-platform build systems, these scripts will only work on Windows in their current form. They would need some work to make them build on other platforms.
+    Use of the cross-build.cmd script is optional. It is part of my automated build system and so I just included it.
+    Enjoy, it's nice to have Windows build support from the libevent team. Thanks! 
