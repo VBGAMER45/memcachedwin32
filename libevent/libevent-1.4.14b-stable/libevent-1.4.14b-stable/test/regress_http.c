@@ -57,6 +57,12 @@
 #include "log.h"
 #include "http-internal.h"
 
+#ifndef SHUT_RDWR
+#define SHUT_RD   0x00
+#define SHUT_WR   0x01
+#define SHUT_RDWR 0x02
+#endif
+
 extern int pair[];
 extern int test_ok;
 

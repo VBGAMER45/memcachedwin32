@@ -1,9 +1,9 @@
 ﻿
-Microsoft Visual Studio Solution File, Format Version 9.00
-# Visual Studio 2005
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 2012
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "event_test", "event_test\event_test.vcproj", "{52099A8B-455B-4BE9-8E61-A3D6E8A4338D}"
 EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "libevent", "libevent.vcproj", "{B98ABFCE-24D4-4B70-94DE-EF7F1E0662F9}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "libevent", "libevent.vcxproj", "{B98ABFCE-24D4-4B70-94DE-EF7F1E0662F9}"
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "signal_test", "signal_test\signal_test.vcproj", "{768DB9DD-2694-4274-89B8-74106E8F7786}"
 	ProjectSection(ProjectDependencies) = postProject
@@ -15,10 +15,7 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "time_test", "time_test\time
 		{B98ABFCE-24D4-4B70-94DE-EF7F1E0662F9} = {B98ABFCE-24D4-4B70-94DE-EF7F1E0662F9}
 	EndProjectSection
 EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "regress", "regress\regress.vcproj", "{F7C26008-6066-4AD3-8543-452EFE58BD2E}"
-	ProjectSection(ProjectDependencies) = postProject
-		{B98ABFCE-24D4-4B70-94DE-EF7F1E0662F9} = {B98ABFCE-24D4-4B70-94DE-EF7F1E0662F9}
-	EndProjectSection
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "regress", "regress\regress.vcxproj", "{F7C26008-6066-4AD3-8543-452EFE58BD2E}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

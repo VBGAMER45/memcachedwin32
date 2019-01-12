@@ -141,6 +141,7 @@ fake_getnameinfo(const struct sockaddr *sa, size_t salen, char *host,
 
 #endif
 
+/*
 #ifndef HAVE_GETADDRINFO
 struct addrinfo {
 	int ai_family;
@@ -150,6 +151,7 @@ struct addrinfo {
 	struct sockaddr *ai_addr;
 	struct addrinfo *ai_next;
 };
+
 static int
 fake_getaddrinfo(const char *hostname, struct addrinfo *ai)
 {
@@ -184,7 +186,7 @@ fake_freeaddrinfo(struct addrinfo *ai)
 	free(ai->ai_addr);
 }
 #endif
-
+*/
 #ifndef MIN
 #define MIN(a,b) (((a)<(b))?(a):(b))
 #endif
