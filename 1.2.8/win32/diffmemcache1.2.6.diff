@@ -1,0 +1,2240 @@
+diff -p -r -u4 -d -N ..\memcached-1.2.6/assoc.c ./assoc.c
+--- ..\memcached-1.2.6/assoc.c	2008-07-29 18:37:28.000000000 +0200
++++ ./assoc.c	2008-09-23 11:59:02.000000000 +0200
+@@ -14,14 +14,19 @@
+  */
+ 
+ #include "memcached.h"
+ #include <sys/stat.h>
++#ifndef WIN32
+ #include <sys/socket.h>
+ #include <sys/signal.h>
+ #include <sys/resource.h>
+ #include <fcntl.h>
+ #include <netinet/in.h>
+ #include <errno.h>
++#else /* !WIN32 */
++#include "win32/config.h"
++#include <winsock2.h>
++#endif /* WIN32 */
+ #include <stdlib.h>
+ #include <stdio.h>
+ #include <string.h>
+ #include <assert.h>
+@@ -486,8 +491,10 @@ void assoc_init(void) {
+ item *assoc_find(const char *key, const size_t nkey) {
+     uint32_t hv = hash(key, nkey, 0);
+     item *it;
+     unsigned int oldbucket;
++    item *ret = NULL;
++    int depth = 0;
+ 
+     if (expanding &&
+         (oldbucket = (hv & hashmask(hashpower - 1))) >= expand_bucket)
+     {
+@@ -495,10 +502,8 @@ item *assoc_find(const char *key, const 
+     } else {
+         it = primary_hashtable[hv & hashmask(hashpower)];
+     }
+ 
+-    item *ret = NULL;
+-    int depth = 0;
+     while (it) {
+         if ((nkey == it->nkey) && (memcmp(key, ITEM_key(it), nkey) == 0)) {
+             ret = it;
+             break;
+diff -p -r -u4 -d -N ..\memcached-1.2.6/items.c ./items.c
+--- ..\memcached-1.2.6/items.c	2008-07-29 18:37:28.000000000 +0200
++++ ./items.c	2008-09-23 11:59:02.000000000 +0200
+@@ -1,14 +1,18 @@
+ /* -*- Mode: C; tab-width: 4; c-basic-offset: 4; indent-tabs-mode: nil -*- */
+ /* $Id$ */
+ #include "memcached.h"
+ #include <sys/stat.h>
++#ifndef WIN32
+ #include <sys/socket.h>
+ #include <sys/signal.h>
+ #include <sys/resource.h>
+ #include <fcntl.h>
+ #include <netinet/in.h>
+ #include <errno.h>
++#else /* !WIN32 */
++#include <winsock2.h>
++#endif /* WIN32 */
+ #include <stdlib.h>
+ #include <stdio.h>
+ #include <string.h>
+ #include <time.h>
+diff -p -r -u4 -d -N ..\memcached-1.2.6/memcached.c ./memcached.c
+--- ..\memcached-1.2.6/memcached.c	2008-07-29 18:37:28.000000000 +0200
++++ ./memcached.c	2008-09-23 11:59:02.000000000 +0200
+@@ -16,8 +16,9 @@ std *
+  *  $Id$
+  */
+ #include "memcached.h"
+ #include <sys/stat.h>
++#ifndef WIN32
+ #include <sys/socket.h>
+ #include <sys/un.h>
+ #include <signal.h>
+ #include <sys/resource.h>
+@@ -37,8 +38,17 @@ std *
+ #include <fcntl.h>
+ #include <netinet/tcp.h>
+ #include <arpa/inet.h>
+ #include <errno.h>
++#else /* !WIN32 */
++#include "win32/config.h"
++#include "../libevent/event.h"
++#include <winsock2.h>
++#include <ws2tcpip.h>
++#include <process.h>
++#include "win32/ntservice.h"
++#include "win32/bsd_getopt.h"
++#endif /* WIN32 */
+ #include <stdlib.h>
+ #include <stdio.h>
+ #include <string.h>
+ #include <time.h>
+@@ -97,9 +107,9 @@ static void set_current_time(void);  /* 
+ static void conn_free(conn *c);
+ 
+ /** exported globals **/
+ struct stats stats;
+-struct settings settings;
++struct the_settings settings;
+ 
+ /** file scope variables **/
+ static item **todelete = NULL;
+ static int delcurr;
+@@ -727,9 +737,9 @@ static int build_udp_headers(conn *c) {
+         *hdr++ = c->msgused / 256;
+         *hdr++ = c->msgused % 256;
+         *hdr++ = 0;
+         *hdr++ = 0;
+-        assert((void *) hdr == (void *)c->msglist[i].msg_iov[0].iov_base + UDP_HEADER_SIZE);
++        assert((void *) hdr == (void *)((char*)c->msglist[i].msg_iov[0].iov_base + UDP_HEADER_SIZE));
+     }
+ 
+     return 0;
+ }
+@@ -751,9 +761,9 @@ static void out_string(conn *c, const ch
+     if (settings.verbose > 1)
+         fprintf(stderr, ">%d %s\n", c->sfd, str);
+ 
+     len = strlen(str);
+-    if ((len + 2) > c->wsize) {
++    if ((len + 2) > (size_t)c->wsize) {
+         /* ought to be always enough. just fail for simplicity */
+         str = "SERVER_ERROR output line too long";
+         len = strlen(str);
+     }
+@@ -773,13 +783,15 @@ static void out_string(conn *c, const ch
+  * has been stored in c->item_comm, and the item is ready in c->item.
+  */
+ 
+ static void complete_nread(conn *c) {
+-    assert(c != NULL);
+-
+-    item *it = c->item;
+-    int comm = c->item_comm;
++    item *it;
++    int comm;
+     int ret;
++    assert(c != NULL);
++    
++    comm = c->item_comm;
++    it = c->item;
+ 
+     STATS_LOCK();
+     stats.set_cmds++;
+     STATS_UNLOCK();
+@@ -1133,9 +1145,9 @@ static void process_stat(conn *c, token_
+     }
+ #endif /* HAVE_STRUCT_MALLINFO */
+ #endif /* HAVE_MALLOC_H */
+ 
+-#if !defined(WIN32) || !defined(__APPLE__)
++#if !defined(WIN32) && !defined(__APPLE__)
+     if (strcmp(subcommand, "maps") == 0) {
+         char *wbuf;
+         int wsize = 8192; /* should be enough */
+         int fd;
+@@ -1416,11 +1428,11 @@ static void process_update_command(conn 
+     char *key;
+     size_t nkey;
+     int flags;
+     time_t exptime;
+-    int vlen, old_vlen;
++    int vlen;
+     uint64_t req_cas_id;
+-    item *it, *old_it;
++    item *it;
+ 
+     assert(c != NULL);
+ 
+     set_noreply_maybe(c, tokens, ntokens);
+@@ -1989,8 +2001,9 @@ static int try_read_udp(conn *c) {
+  */
+ static int try_read_network(conn *c) {
+     int gotdata = 0;
+     int res;
++    int avail;
+ 
+     assert(c != NULL);
+ 
+     if (c->rcurr != c->rbuf) {
+@@ -2022,9 +2035,9 @@ static int try_read_network(conn *c) {
+         } else {
+             c->request_addr_size = 0;
+         }
+ 
+-        int avail = c->rsize - c->rbytes;
++        avail = c->rsize - c->rbytes;
+         res = read(c->sfd, c->rbuf + c->rbytes, avail);
+         if (res > 0) {
+             STATS_LOCK();
+             stats.bytes_read += res;
+@@ -2052,11 +2065,12 @@ static int try_read_network(conn *c) {
+     return gotdata;
+ }
+ 
+ static bool update_event(conn *c, const int new_flags) {
+-    assert(c != NULL);
++    struct event_base *base;
++    assert(c != NULL);    
+ 
+-    struct event_base *base = c->event.ev_base;
++    base = c->event.ev_base;
+     if (c->ev_flags == new_flags)
+         return true;
+     if (event_del(&c->event) == -1) return false;
+     event_set(&c->event, c->sfd, new_flags, event_handler, (void *)c);
+@@ -2120,9 +2134,9 @@ static int transmit(conn *c) {
+             STATS_UNLOCK();
+ 
+             /* We've written some of the data. Remove the completed
+                iovec entries from the list of pending writes. */
+-            while (m->msg_iovlen > 0 && res >= m->msg_iov->iov_len) {
++            while (m->msg_iovlen > 0 && res >= (ssize_t) m->msg_iov->iov_len) {
+                 res -= m->msg_iov->iov_len;
+                 m->msg_iovlen--;
+                 m->msg_iov++;
+             }
+@@ -2432,9 +2446,9 @@ static void maximize_sndbuf(const int sf
+     int min, max, avg;
+     int old_size;
+ 
+     /* Start with the default size. */
+-    if (getsockopt(sfd, SOL_SOCKET, SO_SNDBUF, &old_size, &intsize) != 0) {
++    if (getsockopt(sfd, SOL_SOCKET, SO_SNDBUF, (char*)&old_size, &intsize) != 0) {
+         if (settings.verbose > 0)
+             perror("getsockopt(SO_SNDBUF)");
+         return;
+     }
+@@ -2473,9 +2487,13 @@ static int server_socket(const int port,
+      * the memset call clears nonstandard fields in some impementations
+      * that otherwise mess things up.
+      */
+     memset(&hints, 0, sizeof (hints));
++#ifndef WIN32
+     hints.ai_flags = AI_PASSIVE|AI_ADDRCONFIG;
++#else
++    hints.ai_flags = AI_PASSIVE;
++#endif
+     if (is_udp)
+     {
+         hints.ai_protocol = IPPROTO_UDP;
+         hints.ai_socktype = SOCK_DGRAM;
+@@ -2488,11 +2506,13 @@ static int server_socket(const int port,
+ 
+     snprintf(port_buf, NI_MAXSERV, "%d", port);
+     error= getaddrinfo(settings.inter, port_buf, &hints, &ai);
+     if (error != 0) {
++#ifndef WIN32
+       if (error != EAI_SYSTEM)
+         fprintf(stderr, "getaddrinfo(): %s\n", gai_strerror(error));
+       else
++#endif
+         perror("getaddrinfo()");
+ 
+       return 1;
+     }
+@@ -2576,8 +2596,9 @@ static int new_socket_unix(void) {
+     }
+     return sfd;
+ }
+ 
++#ifndef WIN32
+ static int server_socket_unix(const char *path, int access_mask) {
+     int sfd;
+     struct linger ling = {0, 0};
+     struct sockaddr_un addr;
+@@ -2633,8 +2654,9 @@ static int server_socket_unix(const char
+     }
+ 
+     return 0;
+ }
++#endif /* !WIN32 */
+ 
+ /*
+  * We keep the current time of day in a global variable that's updated by a
+  * timer event. This saves us a bunch of time() system calls (we really only
+@@ -2645,8 +2667,48 @@ static int server_socket_unix(const char
+  */
+ volatile rel_time_t current_time;
+ static struct event clockevent;
+ 
++#ifdef WIN32
++/*
++ * Number of micro-seconds between the beginning of the Windows epoch
++ * (Jan. 1, 1601) and the Unix epoch (Jan. 1, 1970).
++ *
++ * This assumes all Win32 compilers have 64-bit support.
++ */
++#if defined(_MSC_VER) || defined(_MSC_EXTENSIONS) || defined(__WATCOMC__)
++  #define DELTA_EPOCH_IN_USEC  11644473600000000Ui64
++#else
++  #define DELTA_EPOCH_IN_USEC  11644473600000000ULL
++#endif
++
++static unsigned __int64 filetime_to_unix_epoch (const FILETIME *ft)
++{
++    unsigned __int64 res = (unsigned __int64) ft->dwHighDateTime << 32;
++
++    res |= ft->dwLowDateTime;
++    res /= 10;                   /* from 100 nano-sec periods to usec */
++    res -= DELTA_EPOCH_IN_USEC;  /* from Win epoch to Unix epoch */
++    return (res);
++}
++
++int gettimeofday (struct timeval *tv, void *tz)
++{
++    FILETIME  ft;
++    unsigned __int64 tim;
++
++    if (!tv) {
++        set_errno(EINVAL);
++        return (-1);
++    }
++    GetSystemTimeAsFileTime (&ft);
++    tim = filetime_to_unix_epoch (&ft);
++    tv->tv_sec  = (long) (tim / 1000000L);
++    tv->tv_usec = (long) (tim % 1000000L);
++    return (0);
++}
++#endif
++
+ /* time-sensitive callers can call it by hand with this, outside the normal ever-1-second timer */
+ static void set_current_time(void) {
+     struct timeval timer;
+ 
+@@ -2654,9 +2716,9 @@ static void set_current_time(void) {
+     current_time = (rel_time_t) (timer.tv_sec - stats.started);
+ }
+ 
+ static void clock_handler(const int fd, const short which, void *arg) {
+-    struct timeval t = {.tv_sec = 1, .tv_usec = 0};
++    struct timeval t = {t.tv_sec = 1, t.tv_usec = 0};
+     static bool initialized = false;
+ 
+     if (initialized) {
+         /* only delete the event if it's actually there. */
+@@ -2674,9 +2736,9 @@ static void clock_handler(const int fd, 
+ 
+ static struct event deleteevent;
+ 
+ static void delete_handler(const int fd, const short which, void *arg) {
+-    struct timeval t = {.tv_sec = 5, .tv_usec = 0};
++    struct timeval t = {t.tv_sec = 5, t.tv_usec = 0};
+     static bool initialized = false;
+ 
+     if (initialized) {
+         /* some versions of libevent don't like deleting events that don't exist,
+@@ -2716,11 +2778,19 @@ static void usage(void) {
+     printf("-p <num>      TCP port number to listen on (default: 11211)\n"
+            "-U <num>      UDP port number to listen on (default: 0, off)\n"
+            "-s <file>     unix socket path to listen on (disables network support)\n"
+            "-a <mask>     access mask for unix socket, in octal (default 0700)\n"
+-           "-l <ip_addr>  interface to listen on, default is INDRR_ANY\n"
+-           "-d            run as a daemon\n"
+-           "-r            maximize core file limit\n"
++           "-l <ip_addr>  interface to listen on, default is INDRR_ANY\n");
++#ifndef WIN32
++    printf("-d            run as a daemon\n");
++#else /* !WIN32 */
++    printf("-d start          tell memcached to start\n"
++           "-d restart        tell running memcached to do a graceful restart\n"
++           "-d stop|shutdown  tell running memcached to shutdown\n"
++           "-d install        install memcached service\n"
++           "-d uninstall      uninstall memcached service\n");
++#endif /* WIN32 */
++    printf("-r            maximize core file limit\n"
+            "-u <username> assume identity of <username> (only when run as root)\n"
+            "-m <num>      max memory to use for items in megabytes, default is 64 MB\n"
+            "-M            return error on memory exhausted (rather than removing items)\n"
+            "-c <num>      max simultaneous connections, default is 1024\n"
+@@ -2851,8 +2921,19 @@ static void remove_pidfile(const char *p
+   }
+ 
+ }
+ 
++void run_server()
++{
++    /* enter the loop */
++    event_loop(0);
++}
++
++void stop_server()
++{
++    /* exit the loop */
++    event_loopexit(NULL);
++}
+ 
+ static void sig_handler(const int sig) {
+     printf("SIGINT handled.\n");
+     exit(EXIT_SUCCESS);
+@@ -2900,36 +2981,44 @@ int enable_large_pages(void) {
+ #endif
+ 
+ int main (int argc, char **argv) {
+     int c;
+-    int x;
+     bool lock_memory = false;
+     bool daemonize = false;
+     bool preallocate = false;
+     int maxcore = 0;
+     char *username = NULL;
+     char *pid_file = NULL;
+-    struct passwd *pw;
+-    struct sigaction sa;
+-    struct rlimit rlim;
+     /* listening socket */
+     static int *l_socket = NULL;
+ 
+     /* udp socket */
+     static int *u_socket = NULL;
+     static int u_socket_count = 0;
+ 
++#ifndef WIN32    
++    struct passwd *pw;
++    struct sigaction sa;
++    struct rlimit rlim;
++
+     /* handle SIGINT */
+     signal(SIGINT, sig_handler);
++#else /* !WIN32 */
++    WSADATA wsaData;
++    if(WSAStartup(MAKEWORD(2,0), &wsaData) != 0) {
++        fprintf(stderr, "Socket Initialization Error. Program  aborted\n");
++        return;
++    }
++#endif /* WIN32 */
+ 
+     /* init settings */
+     settings_init();
+ 
+     /* set stderr non-buffering (for running under, say, daemontools) */
+     setbuf(stderr, NULL);
+ 
+     /* process arguments */
+-    while ((c = getopt(argc, argv, "a:bp:s:U:m:Mc:khirvdl:u:P:f:s:n:t:D:L")) != -1) {
++    while ((c = getopt(argc, argv, "a:bp:s:U:m:Mc:khirvd:l:u:P:f:s:n:t:D:L")) != -1) {
+         switch (c) {
+         case 'a':
+             /* access for unix domain socket, as octal mask (like chmod)*/
+             settings.access= strtol(optarg,NULL,8);
+@@ -2972,8 +3061,18 @@ int main (int argc, char **argv) {
+             settings.inter= strdup(optarg);
+             break;
+         case 'd':
+             daemonize = true;
++#ifdef WIN32
++            if(!optarg || !strcmpi(optarg, "runservice")) daemonize = 1;
++            else if(!strcmpi(optarg, "start")) daemonize = 2;
++            else if(!strcmpi(optarg, "restart")) daemonize = 3;
++            else if(!strcmpi(optarg, "stop")) daemonize = 4;
++            else if(!strcmpi(optarg, "shutdown")) daemonize = 5;
++            else if(!strcmpi(optarg, "install")) daemonize = 6;
++            else if(!strcmpi(optarg, "uninstall")) daemonize = 7;
++            else fprintf(stderr, "Illegal argument: \"%s\"\n", optarg);
++#endif /* WIN32 */
+             break;
+         case 'r':
+             maxcore = 1;
+             break;
+@@ -3024,8 +3123,9 @@ int main (int argc, char **argv) {
+             return 1;
+         }
+     }
+ 
++#ifndef WIN32
+     if (maxcore != 0) {
+         struct rlimit rlim_new;
+         /*
+          * First try raising to infinity; if that fails, try bringing
+@@ -3080,8 +3180,9 @@ int main (int argc, char **argv) {
+             fprintf(stderr, "failed to daemon() in order to daemonize\n");
+             return 1;
+         }
+     }
++#endif /* !WIN32 */    
+ 
+     /* lock paged memory if needed */
+     if (lock_memory) {
+ #ifdef HAVE_MLOCKALL
+@@ -3094,8 +3195,9 @@ int main (int argc, char **argv) {
+         fprintf(stderr, "warning: -k invalid, mlockall() not supported on this platform.  proceeding without.\n");
+ #endif
+     }
+ 
++#ifndef WIN32
+     /* lose root privileges if we have them */
+     if (getuid() == 0 || geteuid() == 0) {
+         if (username == 0 || *username == '\0') {
+             fprintf(stderr, "can't run as root without the -u switch\n");
+@@ -3108,9 +3210,44 @@ int main (int argc, char **argv) {
+         if (setgid(pw->pw_gid) < 0 || setuid(pw->pw_uid) < 0) {
+             fprintf(stderr, "failed to assume identity of user %s\n", username);
+             return 1;
+         }
++    }    
++#else /* !WIN32 */
++    switch(daemonize) {
++        case 2:
++            if(!ServiceStart()) {
++                fprintf(stderr, "failed to start service\n");
++                return 1;
++            }
++            exit(0);
++        case 3:
++            if(!ServiceRestart()) {
++                fprintf(stderr, "failed to restart service\n");
++                return 1;
++            }
++            exit(0);
++        case 4:
++        case 5:
++            if(!ServiceStop()) {
++                fprintf(stderr, "failed to stop service\n");
++                return 1;
++            }
++            exit(0);
++        case 6:
++            if(!ServiceInstall()) {
++                fprintf(stderr, "failed to install service or service already installed\n");
++                return 1;
++            }
++            exit(0);
++        case 7:
++            if(!ServiceUninstall()) {
++                fprintf(stderr, "failed to uninstall service or service not installed\n");
++                return 1;
++            }
++            exit(0);
+     }
++#endif /* WIN32 */
+ 
+     /* initialize main thread libevent instance */
+     main_base = event_init();
+ 
+@@ -3132,8 +3269,9 @@ int main (int argc, char **argv) {
+         }
+         memset(buckets, 0, sizeof(int) * MAX_BUCKETS);
+     }
+ 
++#ifndef WIN32
+     /*
+      * ignore SIGPIPE signals; we can use errno==EPIPE if we
+      * need that information
+      */
+@@ -3143,8 +3281,10 @@ int main (int argc, char **argv) {
+         sigaction(SIGPIPE, &sa, 0) == -1) {
+         perror("failed to ignore SIGPIPE; sigaction");
+         exit(EXIT_FAILURE);
+     }
++#endif /* !WIN32 */
++    
+     /* start up worker threads if MT mode */
+     thread_init(settings.num_threads, main_base);
+     /* save the PID in if we're a daemon, do this after thread_init due to
+        a file descriptor handling bug somewhere in libevent */
+@@ -3160,15 +3300,17 @@ int main (int argc, char **argv) {
+         exit(EXIT_FAILURE);
+     }
+     delete_handler(0, 0, 0); /* sets up the event */
+ 
++#ifndef WIN32
+     /* create unix mode sockets after dropping privileges */
+     if (settings.socketpath != NULL) {
+         if (server_socket_unix(settings.socketpath,settings.access)) {
+           fprintf(stderr, "failed to listen\n");
+           exit(EXIT_FAILURE);
+         }
+     }
++#endif
+ 
+     /* create the listening socket, bind it, and init */
+     if (settings.socketpath == NULL) {
+         int udp_port;
+@@ -3191,10 +3333,20 @@ int main (int argc, char **argv) {
+             exit(EXIT_FAILURE);
+         }
+     }
+ 
++#ifdef WIN32
++    if (daemonize) {
++    	ServiceSetFunc(run_server, NULL, NULL, stop_server);
++        ServiceRun();
++    } else {
++        event_base_loop(main_base, 0);
++    }
++#else    
+     /* enter the event loop */
+     event_base_loop(main_base, 0);
++#endif /* WIN32 */
++
+     /* remove the PID file if we're a daemon */
+     if (daemonize)
+         remove_pidfile(pid_file);
+     /* Clean up strdup() call for bind() address */
+diff -p -r -u4 -d -N ..\memcached-1.2.6/memcached.h ./memcached.h
+--- ..\memcached-1.2.6/memcached.h	2008-07-29 18:37:28.000000000 +0200
++++ ./memcached.h	2008-09-23 11:59:02.000000000 +0200
+@@ -4,14 +4,21 @@
+ #ifdef HAVE_CONFIG_H
+ #include "config.h"
+ #endif
+ 
+-#include <sys/types.h>
+-#include <sys/socket.h>
+-#include <sys/time.h>
+-#include <netinet/in.h>
+-#include <event.h>
+-#include <netdb.h>
++#include <time.h>
++#ifdef WIN32
++# include "win32/win32.h"
++# include "../libevent/event.h"
++#else /* !WIN32 */
++# include <sys/types.h>
++# include <sys/socket.h>
++# include <sys/time.h>
++# include <netinet/in.h>
++# include <event.h>
++# include <netdb.h>
++#endif /* WIN32 */
++
+ 
+ #define DATA_BUFFER_SIZE 2048
+ #define UDP_READ_BUFFER_SIZE 65536
+ #define UDP_MAX_PAYLOAD_SIZE 1400
+@@ -78,9 +85,9 @@ struct stats {
+ };
+ 
+ #define MAX_VERBOSITY_LEVEL 2
+ 
+-struct settings {
++struct the_settings {
+     size_t maxbytes;
+     int maxconns;
+     int port;
+     int udpport;
+@@ -98,9 +105,9 @@ struct settings {
+     int detail_enabled;     /* nonzero if we're collecting detailed stats */
+ };
+ 
+ extern struct stats stats;
+-extern struct settings settings;
++extern struct the_settings settings;
+ 
+ #define ITEM_LINKED 1
+ #define ITEM_DELETED 2
+ 
+diff -p -r -u4 -d -N ..\memcached-1.2.6/slabs.c ./slabs.c
+--- ..\memcached-1.2.6/slabs.c	2008-07-29 18:37:28.000000000 +0200
++++ ./slabs.c	2008-09-23 11:59:02.000000000 +0200
+@@ -10,14 +10,18 @@
+  * $Id$
+  */
+ #include "memcached.h"
+ #include <sys/stat.h>
++#ifndef WIN32
+ #include <sys/socket.h>
+ #include <sys/signal.h>
+ #include <sys/resource.h>
+ #include <fcntl.h>
+ #include <netinet/in.h>
+ #include <errno.h>
++#else /* !WIN32 */
++#include <winsock2.h>
++#endif /* WIN32 */
+ #include <stdlib.h>
+ #include <stdio.h>
+ #include <string.h>
+ #include <assert.h>
+@@ -127,9 +131,9 @@ void slabs_init(const size_t limit, cons
+             size += CHUNK_ALIGN_BYTES - (size % CHUNK_ALIGN_BYTES);
+ 
+         slabclass[i].size = size;
+         slabclass[i].perslab = POWER_BLOCK / slabclass[i].size;
+-        size *= factor;
++        size = (unsigned int) (size * factor);
+         if (settings.verbose > 1) {
+             fprintf(stderr, "slab class =: chunk size %6u perslab %5u\n",
+                     i, slabclass[i].size, slabclass[i].perslab);
+         }
+@@ -223,9 +227,9 @@ static int do_slabs_newslab(const unsign
+ void *do_slabs_alloc(const size_t size, unsigned int id) {
+     slabclass_t *p;
+     void *ret = NULL;
+ 
+-    if (id < POWER_SMALLEST || id > power_largest) {
++    if (id < POWER_SMALLEST || id > (unsigned) power_largest) {
+         MEMCACHED_SLABS_ALLOCATE_FAILED(size, 0);
+         return NULL;
+     }
+ 
+@@ -256,9 +260,9 @@ void *do_slabs_alloc(const size_t size, 
+         /* if we recently allocated a whole page, return from that */
+         assert(p->end_page_ptr != NULL);
+         ret = p->end_page_ptr;
+         if (--p->end_page_free != 0) {
+-            p->end_page_ptr += p->size;
++            ((char*)p->end_page_ptr) += p->size;
+         } else {
+             p->end_page_ptr = 0;
+         }
+     }
+@@ -271,14 +275,14 @@ void *do_slabs_alloc(const size_t size, 
+ 
+     return ret;
+ }
+ 
+-void do_slabs_free(void *ptr, const size_t size, unsigned int id) {
++void do_slabs_free(void *ptr, size_t size, unsigned int id) {
+     slabclass_t *p;
+ 
+     assert(((item *)ptr)->slabs_clsid == 0);
+-    assert(id >= POWER_SMALLEST && id <= power_largest);
+-    if (id < POWER_SMALLEST || id > power_largest)
++    assert(id >= POWER_SMALLEST && id <= (unsigned) power_largest);
++    if (id < POWER_SMALLEST || id > (unsigned) power_largest)
+         return;
+ 
+     MEMCACHED_SLABS_FREE(size, id, ptr);
+     p = &slabclass[id];
+@@ -424,9 +428,9 @@ static void *memory_allocate(size_t size
+         if (size % CHUNK_ALIGN_BYTES) {
+             size += CHUNK_ALIGN_BYTES - (size % CHUNK_ALIGN_BYTES);
+         }
+ 
+-        mem_current += size;
++        (char*)mem_current += size;
+         if (size < mem_avail) {
+             mem_avail -= size;
+         } else {
+             mem_avail = 0;
+diff -p -r -u4 -d -N ..\memcached-1.2.6/stats.c ./stats.c
+--- ..\memcached-1.2.6/stats.c	2008-04-28 02:37:56.000000000 +0200
++++ ./stats.c	2008-09-23 11:59:02.000000000 +0200
+@@ -207,9 +207,9 @@ char *stats_prefix_dump(int *length) {
+       To run unit tests, compile with $(CC) -DUNIT_TEST stats.c assoc.o
+       (need assoc.o to get the hash() function).
+ ****************************************************************************/
+ 
+-struct settings settings;
++struct the_settings settings;
+ 
+ static char *current_test = "";
+ static int test_count = 0;
+ static int fail_count = 0;
+diff -p -r -u4 -d -N ..\memcached-1.2.6/win32/bsd_getopt.c ./win32/bsd_getopt.c
+--- ..\memcached-1.2.6/win32/bsd_getopt.c	1970-01-01 01:00:00.000000000 +0100
++++ ./win32/bsd_getopt.c	2008-09-23 11:59:02.000000000 +0200
+@@ -0,0 +1,441 @@
++/*-
++ * Copyright (c) 2000 The NetBSD Foundation, Inc.
++ * All rights reserved.
++ *
++ * This code is derived from software contributed to The NetBSD Foundation
++ * by Dieter Baron and Thomas Klausner.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ * 3. All advertising materials mentioning features or use of this software
++ *    must display the following acknowledgement:
++ *        This product includes software developed by the NetBSD
++ *        Foundation, Inc. and its contributors.
++ * 4. Neither the name of The NetBSD Foundation nor the names of its
++ *    contributors may be used to endorse or promote products derived
++ *    from this software without specific prior written permission.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE NETBSD FOUNDATION, INC. AND CONTRIBUTORS
++ * ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
++ * TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE FOUNDATION OR CONTRIBUTORS
++ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
++ * POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "bsd_getopt.h"
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#if !defined(HAVE_GETOPT_LONG)
++int    opterr = 1;        /* if error message should be printed */
++int    optind = 1;        /* index into parent argv vector */
++int    optopt = '?';        /* character checked for validity */
++int    optreset;        /* reset getopt */
++char    *optarg;        /* argument associated with option */
++
++#define IGNORE_FIRST    (*options == '-' || *options == '+')
++#define PRINT_ERROR    ((opterr) && ((*options != ':') \
++                      || (IGNORE_FIRST && options[1] != ':')))
++#define IS_POSIXLY_CORRECT (getenv("POSIXLY_CORRECT") != NULL)
++#define PERMUTE         (!IS_POSIXLY_CORRECT && !IGNORE_FIRST)
++/* XXX: GNU ignores PC if *options == '-' */
++#define IN_ORDER        (!IS_POSIXLY_CORRECT && *options == '-')
++
++/* return values */
++#define    BADCH    (int)'?'
++#define    BADARG        ((IGNORE_FIRST && options[1] == ':') \
++             || (*options == ':') ? (int)':' : (int)'?')
++#define INORDER (int)1
++
++#define    EMSG    ""
++
++static int getopt_internal(int, char * const *, const char *);
++static int gcd(int, int);
++static void permute_args(int, int, int, char * const *);
++
++static char *place = EMSG; /* option letter processing */
++
++/* XXX: set optreset to 1 rather than these two */
++static int nonopt_start = -1; /* first non option argument (for permute) */
++static int nonopt_end = -1;   /* first option after non options (for permute) */
++
++/* Error messages */
++static const char recargchar[] = "option requires an argument -- %c";
++static const char recargstring[] = "option requires an argument -- %s";
++static const char ambig[] = "ambiguous option -- %.*s";
++static const char noarg[] = "option doesn't take an argument -- %.*s";
++static const char illoptchar[] = "unknown option -- %c";
++static const char illoptstring[] = "unknown option -- %s";
++
++
++/*
++ * Compute the greatest common divisor of a and b.
++ */
++static int
++gcd(int a, int b)
++{
++    int c;
++
++    c = a % b;
++    while (c != 0) {
++        a = b;
++        b = c;
++        c = a % b;
++    }
++       
++    return b;
++}
++
++/*
++ * Exchange the block from nonopt_start to nonopt_end with the block
++ * from nonopt_end to opt_end (keeping the same order of arguments
++ * in each block).
++ */
++static void
++permute_args(int panonopt_start,
++         int panonopt_end,
++         int opt_end,
++         char * const *nargv)
++{
++    int cstart, cyclelen, i, j, ncycle, nnonopts, nopts, pos;
++    char *swap;
++
++    /*
++     * compute lengths of blocks and number and size of cycles
++     */
++    nnonopts = panonopt_end - panonopt_start;
++    nopts = opt_end - panonopt_end;
++    ncycle = gcd(nnonopts, nopts);
++    cyclelen = (opt_end - panonopt_start) / ncycle;
++
++    for (i = 0; i < ncycle; i++) {
++        cstart = panonopt_end+i;
++        pos = cstart;
++        for (j = 0; j < cyclelen; j++) {
++            if (pos >= panonopt_end)
++                pos -= nnonopts;
++            else
++                pos += nopts;
++            swap = nargv[pos];
++            /* LINTED const cast */
++            ((char **) nargv)[pos] = nargv[cstart];
++            /* LINTED const cast */
++            ((char **)nargv)[cstart] = swap;
++        }
++    }
++}
++
++/*
++ * getopt_internal --
++ *    Parse argc/argv argument vector.  Called by user level routines.
++ *  Returns -2 if -- is found (can be long option or end of options marker).
++ */
++static int
++getopt_internal(int nargc,
++        char * const *nargv,
++        const char *options)
++{
++    char *oli;                /* option letter list index */
++    int optchar;
++
++    optarg = NULL;
++
++    /*
++     * XXX Some programs (like rsyncd) expect to be able to
++     * XXX re-initialize optind to 0 and have getopt_long(3)
++     * XXX properly function again.  Work around this braindamage.
++     */
++    if (optind == 0)
++        optind = 1;
++
++    if (optreset)
++        nonopt_start = nonopt_end = -1;
++start:
++    if (optreset || !*place) {        /* update scanning pointer */
++        optreset = 0;
++        if (optind >= nargc) {          /* end of argument vector */
++            place = EMSG;
++            if (nonopt_end != -1) {
++                /* do permutation, if we have to */
++                permute_args(nonopt_start, nonopt_end,
++                    optind, nargv);
++                optind -= nonopt_end - nonopt_start;
++            }
++            else if (nonopt_start != -1) {
++                /*
++                 * If we skipped non-options, set optind
++                 * to the first of them.
++                 */
++                optind = nonopt_start;
++            }
++            nonopt_start = nonopt_end = -1;
++            return -1;
++        }
++        if ((*(place = nargv[optind]) != '-')
++            || (place[1] == '\0')) {    /* found non-option */
++            place = EMSG;
++            if (IN_ORDER) {
++                /*
++                 * GNU extension: 
++                 * return non-option as argument to option 1
++                 */
++                optarg = nargv[optind++];
++                return INORDER;
++            }
++            if (!PERMUTE) {
++                /*
++                 * if no permutation wanted, stop parsing
++                 * at first non-option
++                 */
++                return -1;
++            }
++            /* do permutation */
++            if (nonopt_start == -1)
++                nonopt_start = optind;
++            else if (nonopt_end != -1) {
++                permute_args(nonopt_start, nonopt_end,
++                    optind, nargv);
++                nonopt_start = optind -
++                    (nonopt_end - nonopt_start);
++                nonopt_end = -1;
++            }
++            optind++;
++            /* process next argument */
++            goto start;
++        }
++        if (nonopt_start != -1 && nonopt_end == -1)
++            nonopt_end = optind;
++        if (place[1] && *++place == '-') {    /* found "--" */
++            place++;
++            return -2;
++        }
++    }
++    if ((optchar = (int)*place++) == (int)':' ||
++        (oli = strchr(options + (IGNORE_FIRST ? 1 : 0), optchar)) == NULL) {
++        /* option letter unknown or ':' */
++        if (!*place)
++            ++optind;
++        if (PRINT_ERROR)
++            fprintf(stderr, illoptchar, optchar);
++        optopt = optchar;
++        return BADCH;
++    }
++    if (optchar == 'W' && oli[1] == ';') {        /* -W long-option */
++        /* XXX: what if no long options provided (called by getopt)? */
++        if (*place) 
++            return -2;
++
++        if (++optind >= nargc) {    /* no arg */
++            place = EMSG;
++            if (PRINT_ERROR)
++                fprintf(stderr, recargchar, optchar);
++            optopt = optchar;
++            return BADARG;
++        } else                /* white space */
++            place = nargv[optind];
++        /*
++         * Handle -W arg the same as --arg (which causes getopt to
++         * stop parsing).
++         */
++        return -2;
++    }
++    if (*++oli != ':') {            /* doesn't take argument */
++        if (!*place)
++            ++optind;
++    } else {                /* takes (optional) argument */
++        optarg = NULL;
++        if (*place)            /* no white space */
++            optarg = place;
++        /* XXX: disable test for :: if PC? (GNU doesn't) */
++        else if (oli[1] != ':') {    /* arg not optional */
++            if (++optind >= nargc) {    /* no arg */
++                place = EMSG;
++                if (PRINT_ERROR)
++                    fprintf(stderr, recargchar, optchar);
++                optopt = optchar;
++                return BADARG;
++            } else
++                optarg = nargv[optind];
++        }
++        place = EMSG;
++        ++optind;
++    }
++    /* dump back option letter */
++    return optchar;
++}
++
++/*
++ * getopt --
++ *    Parse argc/argv argument vector.
++ *
++ * [eventually this will replace the real getopt]
++ */
++int
++getopt(int nargc, char * const *nargv, const char *options)
++{
++    int retval;
++
++    if ((retval = getopt_internal(nargc, nargv, options)) == -2) {
++        ++optind;
++        /*
++         * We found an option (--), so if we skipped non-options,
++         * we have to permute.
++         */
++        if (nonopt_end != -1) {
++            permute_args(nonopt_start, nonopt_end, optind,
++                       nargv);
++            optind -= nonopt_end - nonopt_start;
++        }
++        nonopt_start = nonopt_end = -1;
++        retval = -1;
++    }
++    return retval;
++}
++
++/*
++ * getopt_long --
++ *    Parse argc/argv argument vector.
++ */
++int
++getopt_long(int nargc,
++        char * const *nargv,
++        const char *options,
++        const struct option *long_options,
++        int *idx)
++{
++    int retval;
++
++    /* idx may be NULL */
++
++    if ((retval = getopt_internal(nargc, nargv, options)) == -2) {
++        char *current_argv, *has_equal;
++        size_t current_argv_len;
++        int i, match;
++
++        current_argv = place;
++        match = -1;
++
++        optind++;
++        place = EMSG;
++
++        if (*current_argv == '\0') {        /* found "--" */
++            /*
++             * We found an option (--), so if we skipped
++             * non-options, we have to permute.
++             */
++            if (nonopt_end != -1) {
++                permute_args(nonopt_start, nonopt_end,
++                    optind, nargv);
++                optind -= nonopt_end - nonopt_start;
++            }
++            nonopt_start = nonopt_end = -1;
++            return -1;
++        }
++        if ((has_equal = strchr(current_argv, '=')) != NULL) {
++            /* argument found (--option=arg) */
++            current_argv_len = has_equal - current_argv;
++            has_equal++;
++        } else
++            current_argv_len = strlen(current_argv);
++        
++        for (i = 0; long_options[i].name; i++) {
++            /* find matching long option */
++            if (strncmp(current_argv, long_options[i].name,
++                current_argv_len))
++                continue;
++
++            if (strlen(long_options[i].name) ==
++                (unsigned)current_argv_len) {
++                /* exact match */
++                match = i;
++                break;
++            }
++            if (match == -1)        /* partial match */
++                match = i;
++            else {
++                /* ambiguous abbreviation */
++                if (PRINT_ERROR)
++                    fprintf(stderr, ambig, (int)current_argv_len,
++                         current_argv);
++                optopt = 0;
++                return BADCH;
++            }
++        }
++        if (match != -1) {            /* option found */
++                if (long_options[match].has_arg == no_argument
++                && has_equal) {
++                if (PRINT_ERROR)
++                    fprintf(stderr, noarg, (int)current_argv_len,
++                         current_argv);
++                /*
++                 * XXX: GNU sets optopt to val regardless of
++                 * flag
++                 */
++                if (long_options[match].flag == NULL)
++                    optopt = long_options[match].val;
++                else
++                    optopt = 0;
++                return BADARG;
++            }
++            if (long_options[match].has_arg == required_argument ||
++                long_options[match].has_arg == optional_argument) {
++                if (has_equal)
++                    optarg = has_equal;
++                else if (long_options[match].has_arg ==
++                    required_argument) {
++                    /*
++                     * optional argument doesn't use
++                     * next nargv
++                     */
++                    optarg = nargv[optind++];
++                }
++            }
++            if ((long_options[match].has_arg == required_argument)
++                && (optarg == NULL)) {
++                /*
++                 * Missing argument; leading ':'
++                 * indicates no error should be generated
++                 */
++                if (PRINT_ERROR)
++                    fprintf(stderr, recargstring, current_argv);
++                /*
++                 * XXX: GNU sets optopt to val regardless
++                 * of flag
++                 */
++                if (long_options[match].flag == NULL)
++                    optopt = long_options[match].val;
++                else
++                    optopt = 0;
++                --optind;
++                return BADARG;
++            }
++        } else {            /* unknown option */
++            if (PRINT_ERROR)
++                fprintf(stderr, illoptstring, current_argv);
++            optopt = 0;
++            return BADCH;
++        }
++        if (long_options[match].flag) {
++            *long_options[match].flag = long_options[match].val;
++            retval = 0;
++        } else 
++            retval = long_options[match].val;
++        if (idx)
++            *idx = match;
++    }
++    return retval;
++}
++#endif /* !GETOPT_LONG || !GETOPT */
+diff -p -r -u4 -d -N ..\memcached-1.2.6/win32/bsd_getopt.h ./win32/bsd_getopt.h
+--- ..\memcached-1.2.6/win32/bsd_getopt.h	1970-01-01 01:00:00.000000000 +0100
++++ ./win32/bsd_getopt.h	2008-09-23 11:59:02.000000000 +0200
+@@ -0,0 +1,33 @@
++/* bsd_getopt.h
++ *
++ * Chris Collins <chris@collins.id.au>
++ */
++
++/** header created for NetBSD getopt/getopt_long */
++
++#ifndef HAVE_GETOPT_LONG
++#ifndef _BSD_GETOPT_H
++#define _BSD_GETOPT_H
++
++extern int    opterr;
++extern int    optind;
++extern int    optopt;
++extern int    optreset;
++extern char  *optarg;
++
++struct option {
++    char  *name;
++    int    has_arg;
++    int   *flag;
++    int    val;
++};
++
++#define no_argument        0
++#define required_argument  1
++#define optional_argument  2
++
++extern int getopt(int nargc, char * const *nargv, const char *options);
++extern int getopt_long(int nargc, char * const *nargv, const char *options, const struct option *long_options, int *idx);
++
++#endif /* _BSD_GETOPT_H */
++#endif
+diff -p -r -u4 -d -N ..\memcached-1.2.6/win32/config.h ./win32/config.h
+--- ..\memcached-1.2.6/win32/config.h	1970-01-01 01:00:00.000000000 +0100
++++ ./win32/config.h	2008-09-24 09:08:50.250000000 +0200
+@@ -0,0 +1,58 @@
++/* Name of package */
++#define PACKAGE "memcached"
++
++/* Define to the address where bug reports for this package should be sent. */
++#define PACKAGE_BUGREPORT "brad@danga.com"
++
++/* Define to the full name of this package. */
++#define PACKAGE_NAME "memcached Server"
++
++/* Define to the full name and version of this package. */
++#define PACKAGE_STRING "memcached 1.2.6"
++
++/* Define to the full name and version of this package. */
++#define PACKAGE_DESCRIPTION "memcached 1.2.6 is a high-performance, distributed memory object caching system, generic in nature, but intended for use in speeding up dynamic web applications by alleviating database load. Win32 port by Kronuz."
++
++/* Define to the one symbol short name of this package. */
++#define PACKAGE_TARNAME "memcached"
++
++/* Define to the version of this package. */
++#define PACKAGE_VERSION "1.2.6"
++
++/* Define to 1 if you have the ANSI C header files. */
++#define STDC_HEADERS 1
++
++/* Version number of package */
++#define VERSION "1.2.6"
++
++/* Machine is littleendian */
++#define ENDIAN_LITTLE 1
++/* Name of package */
++#define PACKAGE "memcached"
++
++/* Define to the address where bug reports for this package should be sent. */
++#define PACKAGE_BUGREPORT "brad@danga.com"
++
++/* Define to the full name of this package. */
++#define PACKAGE_NAME "memcached Server"
++
++/* Define to the full name and version of this package. */
++#define PACKAGE_STRING "memcached 1.2.6"
++
++/* Define to the full name and version of this package. */
++#define PACKAGE_DESCRIPTION "memcached 1.2.6 is a high-performance, distributed memory object caching system, generic in nature, but intended for use in speeding up dynamic web applications by alleviating database load. Win32 port by Kronuz."
++
++/* Define to the one symbol short name of this package. */
++#define PACKAGE_TARNAME "memcached"
++
++/* Define to the version of this package. */
++#define PACKAGE_VERSION "1.2.6"
++
++/* Define to 1 if you have the ANSI C header files. */
++#define STDC_HEADERS 1
++
++/* Version number of package */
++#define VERSION "1.2.6"
++
++/* Machine is littleendian */
++#define ENDIAN_LITTLE 1
+Files ..\memcached-1.2.6/win32/memcached.ico and ./win32/memcached.ico differ
+diff -p -r -u4 -d -N ..\memcached-1.2.6/win32/memcached.rc ./win32/memcached.rc
+--- ..\memcached-1.2.6/win32/memcached.rc	1970-01-01 01:00:00.000000000 +0100
++++ ./win32/memcached.rc	2008-09-23 11:59:02.000000000 +0200
+@@ -0,0 +1,34 @@
++1 ICON DISCARDABLE "memcached.ico"
++1 VERSIONINFO
++ FILEVERSION 1,2,6,0
++ PRODUCTVERSION 1,2,6,0
++ FILEFLAGSMASK 0x3fL
++#if defined(_DEBUG)
++ FILEFLAGS 0x01L
++#else
++ FILEFLAGS 0x00L
++#endif
++ FILEOS 0x40004L
++ FILETYPE 0x1L
++ FILESUBTYPE 0x0L
++BEGIN
++  BLOCK "StringFileInfo"
++  BEGIN
++    BLOCK "040904b0"
++    BEGIN
++      VALUE "Comments", "Use and distribution licensed under the BSD license (the ""License""); you may not use this file except in compliance with the License. \r\n\r\nUnless required by applicable law, software distributed under the License is provided ""AS IS"" AND ANY EXPRESS OR IMPLIED WARRANTIES ARE DISCLAIMED. \r\n\r\nThis product includes software developed by Niels Provos.\r\n[ libevent ] Copyright 2000-2003 Niels Provos <provos@citi.umich.edu>\r\n\r\nThis product includes software developed by the NetBSD Foundation, Inc. and its contributors.\r\n[ bsd_getopts ] Copyright (c) 2000 The NetBSD Foundation, Inc.\r\n\r\nThis product includes software developed by Kronuz.\r\n[ ntservice ] Copyright (c) 2006 German Mendez Bravo (Kronuz) <kronuz@users.sf.net>"
++      VALUE "CompanyName", "Danga Interactive, Inc."
++      VALUE "FileDescription", "memcached Server"
++      VALUE "FileVersion", "1.2.6"
++      VALUE "InternalName", "memcached.exe"
++      VALUE "LegalCopyright", "Copyright (c) 2003-2006, Danga Interactive, Inc. All rights reserved."
++      VALUE "OriginalFilename", "memcached.exe"
++      VALUE "ProductName", "memcached Server"
++      VALUE "ProductVersion", "1.2.6"
++    END
++  END
++  BLOCK "VarFileInfo"
++  BEGIN
++    VALUE "Translation", 0x409, 1200
++  END
++END
+diff -p -r -u4 -d -N ..\memcached-1.2.6/win32/memcached.sln ./win32/memcached.sln
+--- ..\memcached-1.2.6/win32/memcached.sln	1970-01-01 01:00:00.000000000 +0100
++++ ./win32/memcached.sln	2008-09-23 11:59:02.000000000 +0200
+@@ -0,0 +1,35 @@
++?
++Microsoft Visual Studio Solution File, Format Version 8.00
++Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "memcached", "memcached.vcproj", "{06D065F6-F44E-4E83-A7A2-F8962A4E51A7}"
++	ProjectSection(ProjectDependencies) = postProject
++	EndProjectSection
++EndProject
++Global
++	GlobalSection(SolutionConfiguration) = preSolution
++		Debug = Debug
++		Release = Release
++	EndGlobalSection
++	GlobalSection(ProjectConfiguration) = postSolution
++		{06D065F6-F44E-4E83-A7A2-F8962A4E51A7}.Debug.ActiveCfg = Debug|Win32
++		{06D065F6-F44E-4E83-A7A2-F8962A4E51A7}.Debug.Build.0 = Debug|Win32
++		{06D065F6-F44E-4E83-A7A2-F8962A4E51A7}.Release.ActiveCfg = Release|Win32
++		{06D065F6-F44E-4E83-A7A2-F8962A4E51A7}.Release.Build.0 = Release|Win32
++	EndGlobalSection
++	GlobalSection(ExtensibilityGlobals) = postSolution
++	EndGlobalSection
++	GlobalSection(ExtensibilityAddIns) = postSolution
++	EndGlobalSection
++	GlobalSection(SolutionConfigurationPlatforms) = preSolution
++		Debug|Win32 = Debug|Win32
++		Release|Win32 = Release|Win32
++	EndGlobalSection
++	GlobalSection(ProjectConfigurationPlatforms) = postSolution
++		{06D065F6-F44E-4E83-A7A2-F8962A4E51A7}.Debug|Win32.ActiveCfg = Debug|Win32
++		{06D065F6-F44E-4E83-A7A2-F8962A4E51A7}.Debug|Win32.Build.0 = Debug|Win32
++		{06D065F6-F44E-4E83-A7A2-F8962A4E51A7}.Release|Win32.ActiveCfg = Release|Win32
++		{06D065F6-F44E-4E83-A7A2-F8962A4E51A7}.Release|Win32.Build.0 = Release|Win32
++	EndGlobalSection
++	GlobalSection(SolutionProperties) = preSolution
++		HideSolutionNode = FALSE
++	EndGlobalSection
++EndGlobal
+diff -p -r -u4 -d -N ..\memcached-1.2.6/win32/memcached.vcproj ./win32/memcached.vcproj
+--- ..\memcached-1.2.6/win32/memcached.vcproj	1970-01-01 01:00:00.000000000 +0100
++++ ./win32/memcached.vcproj	2008-09-23 11:59:02.000000000 +0200
+@@ -0,0 +1,206 @@
++<?xml version="1.0" encoding="Windows-1252"?>
++<VisualStudioProject
++	ProjectType="Visual C++"
++	Version="7.10"
++	Name="memcached"
++	ProjectGUID="{06D065F6-F44E-4E83-A7A2-F8962A4E51A7}">
++	<Platforms>
++		<Platform
++			Name="Win32"/>
++	</Platforms>
++	<Configurations>
++		<Configuration
++			Name="Debug|Win32"
++			OutputDirectory="Debug"
++			IntermediateDirectory="Debug"
++			ConfigurationType="1"
++			UseOfMFC="0"
++			ATLMinimizesCRunTimeLibraryUsage="FALSE"
++			CharacterSet="2">
++			<Tool
++				Name="VCCLCompilerTool"
++				Optimization="0"
++				AdditionalIncludeDirectories=""
++				PreprocessorDefinitions="WIN32;_DEBUG;_CONSOLE;_CRT_SECURE_NO_DEPRECATE "
++				MinimalRebuild="TRUE"
++				BasicRuntimeChecks="3"
++				RuntimeLibrary="3"
++				PrecompiledHeaderFile="Debug/memcached.pch"
++				AssemblerListingLocation="Debug/"
++				ObjectFile="Debug/"
++				ProgramDataBaseFileName="Debug/"
++				WarningLevel="3"
++				SuppressStartupBanner="TRUE"
++				DebugInformationFormat="4"/>
++			<Tool
++				Name="VCCustomBuildTool"/>
++			<Tool
++				Name="VCLinkerTool"
++				AdditionalDependencies="ws2_32.lib ..\..\libevent\WIN32-Prj\Debug\libevent.lib"
++				OutputFile="Debug\memcached.exe"
++				LinkIncremental="2"
++				SuppressStartupBanner="TRUE"
++				AdditionalLibraryDirectories=""
++				GenerateDebugInformation="TRUE"
++				ProgramDatabaseFile="Debug/memcached.pdb"
++				SubSystem="1"
++				TargetMachine="1"/>
++			<Tool
++				Name="VCMIDLTool"
++				TypeLibraryName="Debug/memcached.tlb"
++				HeaderFileName=""/>
++			<Tool
++				Name="VCPostBuildEventTool"/>
++			<Tool
++				Name="VCPreBuildEventTool"/>
++			<Tool
++				Name="VCPreLinkEventTool"/>
++			<Tool
++				Name="VCResourceCompilerTool"
++				PreprocessorDefinitions="_DEBUG"
++				Culture="2057"/>
++			<Tool
++				Name="VCWebServiceProxyGeneratorTool"/>
++			<Tool
++				Name="VCXMLDataGeneratorTool"/>
++			<Tool
++				Name="VCWebDeploymentTool"/>
++			<Tool
++				Name="VCManagedWrapperGeneratorTool"/>
++			<Tool
++				Name="VCAuxiliaryManagedWrapperGeneratorTool"/>
++		</Configuration>
++		<Configuration
++			Name="Release|Win32"
++			OutputDirectory="Release"
++			IntermediateDirectory="Release"
++			ConfigurationType="1"
++			UseOfMFC="0"
++			ATLMinimizesCRunTimeLibraryUsage="FALSE"
++			CharacterSet="2">
++			<Tool
++				Name="VCCLCompilerTool"
++				Optimization="2"
++				InlineFunctionExpansion="1"
++				AdditionalIncludeDirectories=""
++				PreprocessorDefinitions="WIN32;NDEBUG;_CONSOLE;_CRT_SECURE_NO_DEPRECATE "
++				StringPooling="TRUE"
++				RuntimeLibrary="2"
++				EnableFunctionLevelLinking="TRUE"
++				PrecompiledHeaderFile="Release/memcached.pch"
++				AssemblerListingLocation="Release/"
++				ObjectFile="Release/"
++				ProgramDataBaseFileName="Release/"
++				WarningLevel="3"
++				SuppressStartupBanner="TRUE"/>
++			<Tool
++				Name="VCCustomBuildTool"/>
++			<Tool
++				Name="VCLinkerTool"
++				AdditionalDependencies="ws2_32.lib ..\..\libevent\WIN32-Prj\Release\libevent.lib"
++				OutputFile="Release\memcached.exe"
++				LinkIncremental="1"
++				SuppressStartupBanner="TRUE"
++				AdditionalLibraryDirectories=""
++				IgnoreDefaultLibraryNames=""
++				ProgramDatabaseFile="Release/memcached.pdb"
++				SubSystem="1"
++				TargetMachine="1"/>
++			<Tool
++				Name="VCMIDLTool"
++				TypeLibraryName="Release/memcached.tlb"
++				HeaderFileName=""/>
++			<Tool
++				Name="VCPostBuildEventTool"/>
++			<Tool
++				Name="VCPreBuildEventTool"/>
++			<Tool
++				Name="VCPreLinkEventTool"/>
++			<Tool
++				Name="VCResourceCompilerTool"
++				PreprocessorDefinitions="NDEBUG"
++				Culture="2057"/>
++			<Tool
++				Name="VCWebServiceProxyGeneratorTool"/>
++			<Tool
++				Name="VCXMLDataGeneratorTool"/>
++			<Tool
++				Name="VCWebDeploymentTool"/>
++			<Tool
++				Name="VCManagedWrapperGeneratorTool"/>
++			<Tool
++				Name="VCAuxiliaryManagedWrapperGeneratorTool"/>
++		</Configuration>
++	</Configurations>
++	<References>
++	</References>
++	<Files>
++		<Filter
++			Name="Source Files"
++			Filter="cpp;c;cxx;rc;def;r;odl;idl;hpj;bat">
++			<File
++				RelativePath="..\assoc.c">
++			</File>
++			<File
++				RelativePath="bsd_getopt.c">
++			</File>
++			<File
++				RelativePath="..\items.c">
++			</File>
++			<File
++				RelativePath="..\memcached.c">
++			</File>
++			<File
++				RelativePath=".\memcached.rc">
++			</File>
++			<File
++				RelativePath="ntservice.c">
++			</File>
++			<File
++				RelativePath="..\slabs.c">
++			</File>
++			<File
++				RelativePath="..\stats.c">
++			</File>
++			<File
++				RelativePath="..\thread.c">
++			</File>
++			<File
++				RelativePath="win32.c">
++			</File>
++		</Filter>
++		<Filter
++			Name="Header Files"
++			Filter="h;hpp;hxx;hm;inl">
++			<File
++				RelativePath="..\assoc.h">
++			</File>
++			<File
++				RelativePath="bsd_getopt.h">
++			</File>
++			<File
++				RelativePath="config.h">
++			</File>
++			<File
++				RelativePath="..\items.h">
++			</File>
++			<File
++				RelativePath="..\memcached.h">
++			</File>
++			<File
++				RelativePath="ntservice.h">
++			</File>
++			<File
++				RelativePath="..\slabs.h">
++			</File>
++			<File
++				RelativePath="..\stats.h">
++			</File>
++			<File
++				RelativePath="win32.h">
++			</File>
++		</Filter>
++	</Files>
++	<Globals>
++	</Globals>
++</VisualStudioProject>
+diff -p -r -u4 -d -N ..\memcached-1.2.6/win32/ntservice.c ./win32/ntservice.c
+--- ..\memcached-1.2.6/win32/ntservice.c	1970-01-01 01:00:00.000000000 +0100
++++ ./win32/ntservice.c	2008-09-23 11:59:02.000000000 +0200
+@@ -0,0 +1,275 @@
++/* ntservice.c
++ *
++ *  Copyright (c) 2006 Germ?n M?ndez Bravo (Kronuz) <kronuz@users.sf.net>
++ *  All rights reserved.
++ *  
++ *  Redistribution and use in source and binary forms, with or without
++ *  modification, are permitted provided that the following conditions
++ *  are met:
++ *  1. Redistributions of source code must retain the above copyright
++ *     notice, this list of conditions and the following disclaimer.
++ *  2. Redistributions in binary form must reproduce the above copyright
++ *     notice, this list of conditions and the following disclaimer in the
++ *     documentation and/or other materials provided with the distribution.
++ *  3. All advertising materials mentioning features or use of this software
++ *     must display the following acknowledgement:
++ *        This product includes software developed by Kronuz.
++ *  4. The name of the author may not be used to endorse or promote products
++ *     derived from this software without specific prior written permission.
++ *  
++ *  THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
++ *  IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
++ *  OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
++ *  IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
++ *  INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
++ *  NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
++ *  DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
++ *  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ *  (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
++ *  THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++#pragma comment(lib, "advapi32.lib")
++#include "config.h"
++#include "ntservice.h"
++
++#include <windows.h>
++#include <stdio.h>
++
++/* Extern callbacks to manage the server */
++svcFunc runServer = NULL;
++svcFunc pauseServer = NULL;
++svcFunc continueServer = NULL;
++svcFunc stopServer = NULL;
++
++SERVICE_STATUS serviceStatus;
++SERVICE_STATUS_HANDLE serviceStatusHandle = 0;
++
++void ServiceSetFunc(svcFunc runFunc, svcFunc pauseFunc, svcFunc continueFunc, svcFunc stopFunc)
++{
++	runServer = runFunc;
++	pauseServer = pauseFunc;
++	continueServer = continueFunc;
++	stopServer = stopFunc;
++}
++
++void WINAPI ServiceControlHandler(DWORD controlCode)
++{
++    switch(controlCode) {
++        case SERVICE_CONTROL_SHUTDOWN:
++        case SERVICE_CONTROL_STOP:
++            /* set the service curent status */
++            serviceStatus.dwCurrentState = SERVICE_STOP_PENDING;
++            SetServiceStatus(serviceStatusHandle, &serviceStatus);
++
++            if(stopServer) stopServer();
++            return;
++
++        case SERVICE_CONTROL_PAUSE:
++            /* set the service curent status */
++            serviceStatus.dwCurrentState = SERVICE_PAUSE_PENDING;
++            SetServiceStatus(serviceStatusHandle, &serviceStatus);
++
++            if(pauseServer) pauseServer();
++            break;
++
++        case SERVICE_CONTROL_CONTINUE:
++            /* set the service curent status */
++            serviceStatus.dwCurrentState = SERVICE_CONTINUE_PENDING;
++            SetServiceStatus(serviceStatusHandle, &serviceStatus);
++
++            if(continueServer) continueServer();
++            break;
++
++        case SERVICE_CONTROL_INTERROGATE:
++            break;
++    }
++
++    SetServiceStatus(serviceStatusHandle, &serviceStatus);
++}
++
++void WINAPI ServiceMain(DWORD dwNumServicesArgs, LPSTR *lpServiceArgVectors)
++{
++    // initialise service status
++    serviceStatus.dwServiceType = SERVICE_WIN32;
++    serviceStatus.dwCurrentState = SERVICE_STOPPED;
++    serviceStatus.dwControlsAccepted = 0;
++    serviceStatus.dwWin32ExitCode = NO_ERROR;
++    serviceStatus.dwServiceSpecificExitCode = NO_ERROR;
++    serviceStatus.dwCheckPoint = 0;
++    serviceStatus.dwWaitHint = 0;
++
++    serviceStatusHandle = RegisterServiceCtrlHandler(PACKAGE_NAME, ServiceControlHandler);
++
++    if(serviceStatusHandle) {
++        /* set the service curent status as starting */
++        serviceStatus.dwCurrentState = SERVICE_START_PENDING;
++        SetServiceStatus(serviceStatusHandle, &serviceStatus);
++
++        /* set the service curent status as running and accepting shutdown */
++        serviceStatus.dwControlsAccepted |= (SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN);
++        serviceStatus.dwCurrentState = SERVICE_RUNNING;
++        SetServiceStatus(serviceStatusHandle, &serviceStatus);
++
++        /* execute the main code */
++        if(runServer) runServer();
++
++        /* set the service curent status as stopping */
++        serviceStatus.dwCurrentState = SERVICE_STOP_PENDING;
++        SetServiceStatus(serviceStatusHandle, &serviceStatus);
++
++        /* set the service curent status as stopped and not accepting shutdown*/
++        serviceStatus.dwControlsAccepted &= ~(SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN);
++        serviceStatus.dwCurrentState = SERVICE_STOPPED;
++        SetServiceStatus(serviceStatusHandle, &serviceStatus);
++    }
++}
++
++int ServiceWait(SC_HANDLE service, DWORD pending, DWORD complete)
++{
++    SERVICE_STATUS serviceStatus;
++    int counter = 0;
++    do {
++        Sleep(1000);
++        if(counter++>10 || QueryServiceStatus(service, &serviceStatus)==0)
++            return FALSE;
++    } while(serviceStatus.dwCurrentState == pending);
++    return (serviceStatus.dwCurrentState == complete);
++}
++
++int ServiceRun()
++{
++    SERVICE_TABLE_ENTRY serviceTable[] =
++    {
++        { PACKAGE_NAME, ServiceMain },
++        { 0, 0 }
++    };
++
++    StartServiceCtrlDispatcher(serviceTable);
++	return 0;
++}
++
++int ServiceInstall()
++{
++    int ok = 0;
++    SC_HANDLE service;
++    SERVICE_DESCRIPTION sdBuf;
++    SC_HANDLE serviceControlManager = OpenSCManager(0, 0, SC_MANAGER_CREATE_SERVICE);
++
++    if(serviceControlManager) {
++        char exe_path[MAX_PATH + 1];
++        if(GetModuleFileName(0, exe_path, sizeof(exe_path)) > 0) {
++            char launch_cmd[MAX_PATH + 50];
++            sprintf(launch_cmd, "\"%s\" -d runservice", exe_path);
++            service = CreateService(serviceControlManager,
++                            PACKAGE_NAME, PACKAGE_NAME,
++                            SERVICE_ALL_ACCESS, SERVICE_WIN32_OWN_PROCESS,
++                            SERVICE_AUTO_START, SERVICE_ERROR_IGNORE, launch_cmd,
++                            0, 0, 0, 0, 0);
++            if(service) {
++                sdBuf.lpDescription = PACKAGE_DESCRIPTION;
++                ChangeServiceConfig2(service, SERVICE_CONFIG_DESCRIPTION, &sdBuf);
++                CloseServiceHandle(service);
++                ok = 1;
++            }
++        }
++        CloseServiceHandle(serviceControlManager);
++    }
++    return ok;
++}
++
++int ServiceUninstall()
++{
++    int ok = 0;
++    SC_HANDLE service;
++    SERVICE_STATUS serviceStatus;
++    SC_HANDLE serviceControlManager = OpenSCManager(0, 0, SC_MANAGER_CONNECT);
++
++    if(serviceControlManager) {
++        service = OpenService(serviceControlManager,
++            PACKAGE_NAME, SERVICE_QUERY_STATUS | DELETE);
++        if(service) {
++            if(QueryServiceStatus(service, &serviceStatus)) {
++                if(serviceStatus.dwCurrentState == SERVICE_STOPPED)
++                    if(DeleteService(service))
++                        ok = 1;
++            }
++            CloseServiceHandle(service);
++        }
++        CloseServiceHandle(serviceControlManager);
++    }
++    return ok;
++}
++
++int ServiceStart()
++{
++    int ok = 0;
++    SC_HANDLE service;
++    SERVICE_STATUS serviceStatus;
++    SC_HANDLE serviceControlManager = OpenSCManager(0, 0, SC_MANAGER_CONNECT);
++
++    if(serviceControlManager) {
++        service = OpenService(serviceControlManager,
++            PACKAGE_NAME, SERVICE_QUERY_STATUS | SERVICE_START);
++        if(service) {
++            if(QueryServiceStatus(service, &serviceStatus)) {
++                if(serviceStatus.dwCurrentState == SERVICE_STOPPED) {
++                    StartService(service, 0, NULL);
++                    if(ServiceWait(service, SERVICE_START_PENDING, SERVICE_RUNNING))
++                        ok = 1;
++                } else if(serviceStatus.dwCurrentState == SERVICE_RUNNING) ok = 1;
++            }
++            CloseServiceHandle(service);
++        }
++        CloseServiceHandle(serviceControlManager);
++    }
++    return ok;
++}
++
++int ServiceStop()
++{
++    int ok = 0;
++    SC_HANDLE service;
++    SERVICE_STATUS serviceStatus;
++    SC_HANDLE serviceControlManager = OpenSCManager(0, 0, SC_MANAGER_CONNECT);
++
++    if(serviceControlManager) {
++        service = OpenService(serviceControlManager,
++            PACKAGE_NAME, SERVICE_QUERY_STATUS | SERVICE_STOP);
++        if(service) {
++            if(QueryServiceStatus(service, &serviceStatus)) {
++                if(serviceStatus.dwCurrentState == SERVICE_RUNNING) {
++                    ControlService(service, SERVICE_CONTROL_STOP, &serviceStatus);
++                    if(ServiceWait(service, SERVICE_STOP_PENDING, SERVICE_STOPPED))
++                        ok = 1;
++                    CloseServiceHandle(service);
++                } else if(serviceStatus.dwCurrentState == SERVICE_STOPPED) ok = 1;
++            }
++        }
++        CloseServiceHandle(serviceControlManager);
++    }
++    return ok;
++}
++
++int ServiceRestart()
++{
++    int ok = 0;
++    SC_HANDLE service;
++    SERVICE_STATUS serviceStatus;
++    SC_HANDLE serviceControlManager = OpenSCManager(0, 0, SC_MANAGER_CONNECT);
++
++    if(serviceControlManager) {
++        service = OpenService(serviceControlManager,
++            PACKAGE_NAME, SERVICE_QUERY_STATUS | SERVICE_STOP);
++        if(service) {
++            ControlService(service, SERVICE_CONTROL_STOP, &serviceStatus);
++            if(ServiceWait(service, SERVICE_STOP_PENDING, SERVICE_STOPPED)) {
++                StartService(service, 0, NULL);
++                if(ServiceWait(service, SERVICE_START_PENDING, SERVICE_RUNNING))
++                    ok = 1;
++            }
++            CloseServiceHandle(service);
++        }
++        CloseServiceHandle(serviceControlManager);
++    }
++    return ok;
++}
+diff -p -r -u4 -d -N ..\memcached-1.2.6/win32/ntservice.h ./win32/ntservice.h
+--- ..\memcached-1.2.6/win32/ntservice.h	1970-01-01 01:00:00.000000000 +0100
++++ ./win32/ntservice.h	2008-09-23 11:59:02.000000000 +0200
+@@ -0,0 +1,22 @@
++/* ntservice.h
++ *
++ *  Copyright (c) 2006 Germ?n M?ndez Bravo (Kronuz) <kronuz@users.sf.net>
++ *  All rights reserved.
++ *
++ */
++
++#ifndef SERVICE_H
++#define SERVICE_H
++
++typedef void (*svcFunc) ();
++
++int ServiceStart();
++int ServiceStop();
++int ServiceRestart();
++int ServiceUninstall();
++int ServiceInstall();
++int ServiceRun();
++
++void ServiceSetFunc(svcFunc runFunc, svcFunc pauseFunc, svcFunc continueFunc, svcFunc stopFunc);
++
++#endif
+diff -p -r -u4 -d -N ..\memcached-1.2.6/win32/win32.c ./win32/win32.c
+--- ..\memcached-1.2.6/win32/win32.c	1970-01-01 01:00:00.000000000 +0100
++++ ./win32/win32.c	2008-09-23 11:59:02.000000000 +0200
+@@ -0,0 +1,176 @@
++/* Copyright (c) 1983, 1990, 1993
++ *    The Regents of the University of California.  All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ * 3. All advertising materials mentioning features or use of this software
++ *    must display the following acknowledgement:
++ *     This product includes software developed by the University of
++ *     California, Berkeley and its contributors.
++ * 4. Neither the name of the University nor the names of its contributors
++ *    may be used to endorse or promote products derived from this software
++ *    without specific prior written permission.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
++ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
++ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
++ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
++ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
++ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
++ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
++ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
++ * SUCH DAMAGE.
++ *
++ * Portions Copyright (c) 1993 by Digital Equipment Corporation.
++ *
++ * Permission to use, copy, modify, and distribute this software for any
++ * purpose with or without fee is hereby granted, provided that the above
++ * copyright notice and this permission notice appear in all copies, and that
++ * the name of Digital Equipment Corporation not be used in advertising or
++ * publicity pertaining to distribution of the document or software without
++ * specific, written prior permission.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS" AND DIGITAL EQUIPMENT CORP. DISCLAIMS ALL
++ * WARRANTIES WITH REGARD TO THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES
++ * OF MERCHANTABILITY AND FITNESS.   IN NO EVENT SHALL DIGITAL EQUIPMENT
++ * CORPORATION BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL
++ * DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR
++ * PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS
++ * ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS
++ * SOFTWARE.
++ *
++ */
++
++#include "win32.h"
++
++int fcntl(SOCKET s, int cmd, int val)
++{
++    u_long imode = 1;
++    switch(cmd) {
++        case F_SETFL:
++            switch(val) {
++                case O_NONBLOCK:
++                    imode = 1;
++                    if(ioctlsocket(s, FIONBIO, &imode) == SOCKET_ERROR)
++                        return -1;
++                    break;
++                case O_BLOCK:
++                    imode = 0;
++                    if(ioctlsocket(s, FIONBIO, &imode) == SOCKET_ERROR)
++                        return -1;
++                    break;
++                default:
++                    return -1;
++            }
++        case F_GETFL:
++            return 0;
++        default:
++            return -1;
++    }
++}
++
++/*
++ * Check whether "cp" is a valid ascii representation
++ * of an Internet address and convert to a binary address.
++ * Returns 1 if the address is valid, 0 if not.
++ * This replaces inet_addr, the return value from which
++ * cannot distinguish between failure and a local broadcast address.
++ */
++int inet_aton(register const char *cp, struct in_addr *addr)
++{
++    register uint32_t val;
++    register int base, n;
++    register char c;
++    u_int parts[4];
++    register u_int *pp = parts;
++
++    c = *cp;
++    for (;;) {
++        /*
++         * Collect number up to ``.''.
++         * Values are specified as for C:
++         * 0x=hex, 0=octal, isdigit=decimal.
++         */
++        if (!isdigit(c))
++            return (0);
++        val = 0; base = 10;
++        if (c == '0') {
++            c = *++cp;
++            if (c == 'x' || c == 'X')
++                base = 16, c = *++cp;
++            else
++                base = 8;
++        }
++        for (;;) {
++            if (isascii(c) && isdigit(c)) {
++                val = (val * base) + (c - '0');
++                c = *++cp;
++            } else if (base == 16 && isascii(c) && isxdigit(c)) {
++                val = (val << 4) |
++                    (c + 10 - (islower(c) ? 'a' : 'A'));
++                c = *++cp;
++            } else
++                break;
++        }
++        if (c == '.') {
++            /*
++             * Internet format:
++             *    a.b.c.d
++             *    a.b.c    (with c treated as 16 bits)
++             *    a.b    (with b treated as 24 bits)
++             */
++            if (pp >= parts + 3)
++                return (0);
++            *pp++ = val;
++            c = *++cp;
++        } else
++            break;
++    }
++    /*
++     * Check for trailing characters.
++     */
++    if (c != '\0' && (!isascii(c) || !isspace(c)))
++        return (0);
++    /*
++     * Concoct the address according to
++     * the number of parts specified.
++     */
++    n = pp - parts + 1;
++    switch (n) {
++
++    case 0:
++        return (0);        /* initial nondigit */
++
++    case 1:                /* a -- 32 bits */
++        break;
++
++    case 2:                /* a.b -- 8.24 bits */
++        if (val > 0xffffff)
++            return (0);
++        val |= parts[0] << 24;
++        break;
++
++    case 3:                /* a.b.c -- 8.8.16 bits */
++        if (val > 0xffff)
++            return (0);
++        val |= (parts[0] << 24) | (parts[1] << 16);
++        break;
++
++    case 4:                /* a.b.c.d -- 8.8.8.8 bits */
++        if (val > 0xff)
++            return (0);
++        val |= (parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8);
++        break;
++    }
++    if (addr)
++        addr->s_addr = htonl(val);
++    return (1);
++}
+diff -p -r -u4 -d -N ..\memcached-1.2.6/win32/win32.h ./win32/win32.h
+--- ..\memcached-1.2.6/win32/win32.h	1970-01-01 01:00:00.000000000 +0100
++++ ./win32/win32.h	2008-09-23 11:59:02.000000000 +0200
+@@ -0,0 +1,168 @@
++/* win32.h
++ *
++ */
++
++#ifndef WIN32_H
++#define WIN32_H
++
++#include <Winsock2.h>
++#include <errno.h>
++
++#if defined(_MT) || defined(_DLL)
++# define set_errno(x)    (*_errno()) = (x)
++#else
++# define set_errno(x)    errno = (x)
++#endif
++
++#define EADDRINUSE  WSAEADDRINUSE
++
++#pragma warning(disable : 4996)
++
++#if defined(_MSC_VER)
++// for MSVC 6.0
++typedef          __int64    int64_t;
++typedef unsigned __int64   uint64_t;
++typedef          int        int32_t;
++typedef unsigned int       uint32_t;
++typedef          short      int16_t;
++typedef unsigned short     uint16_t;
++typedef          char        int8_t;
++typedef unsigned char       uint8_t;
++#define inline __inline
++#endif // _WIN32 && _MSC_VER
++
++#define pid_t int
++#define EWOULDBLOCK        EAGAIN
++#define EAFNOSUPPORT       47
++typedef int socklen_t;
++typedef int ssize_t;
++
++#define O_BLOCK 0
++#define O_NONBLOCK 1
++#define F_GETFL 3
++#define F_SETFL 4
++
++#define IOV_MAX 1024
++struct iovec {
++	u_long iov_len;  
++	char FAR* iov_base;
++};
++struct msghdr
++{
++	void	*msg_name;			/* Socket name			*/
++	int		 msg_namelen;		/* Length of name		*/
++	struct iovec *msg_iov;		/* Data blocks			*/
++	int		 msg_iovlen;		/* Number of blocks		*/
++	void	*msg_accrights;		/* Per protocol magic (eg BSD file descriptor passing) */ 
++	int		 msg_accrightslen;	/* Length of rights list */
++};
++
++int fcntl(SOCKET s, int cmd, int val);
++int inet_aton(register const char *cp, struct in_addr *addr);
++
++#define close(s) closesocket(s)
++
++inline int inet_pton(int af, register const char *cp, struct in_addr *addr)
++{
++    if(af != AF_INET) {
++		WSASetLastError(WSAEPFNOSUPPORT);
++		return -1;
++    }
++    return inet_aton(cp, addr);
++}
++
++inline size_t write(int s, void *buf, size_t len)
++{
++	DWORD dwBufferCount = 0;
++	WSABUF wsabuf = { len, (char *)buf} ;
++	if(WSASend(s, &wsabuf, 1, &dwBufferCount, 0, NULL, NULL) == 0) {
++		return dwBufferCount;
++	}
++	if(WSAGetLastError() == WSAECONNRESET) return 0;
++	return -1;
++}
++
++inline size_t read(int s, void *buf, size_t len)
++{
++	DWORD flags = 0;
++	DWORD dwBufferCount;
++	WSABUF wsabuf = { len, (char *)buf };
++	if(WSARecv((SOCKET)s, 
++		&wsabuf, 
++		1, 
++		&dwBufferCount, 
++		&flags, 
++		NULL, 
++		NULL
++	) == 0) {
++		return dwBufferCount;
++	}
++	if(WSAGetLastError() == WSAECONNRESET) return 0;
++	return -1;
++}
++
++inline int sendmsg(int s, const struct msghdr *msg, int flags)
++{
++	DWORD dwBufferCount;
++	if(WSASendTo((SOCKET) s,
++		(LPWSABUF)msg->msg_iov,
++		(DWORD)msg->msg_iovlen,
++		&dwBufferCount,
++		flags,
++		msg->msg_name,
++		msg->msg_namelen,
++		NULL,
++		NULL
++	) == 0) {
++		return dwBufferCount;
++	}
++	if(WSAGetLastError() == WSAECONNRESET) return 0;
++	return -1;
++}
++
++#undef errno
++#define errno werrno()
++inline int werrno()
++{
++	int error = WSAGetLastError();
++	if(error == 0) error = *_errno();
++
++	switch(error) {
++		default:
++			return error;
++		case WSAEPFNOSUPPORT:
++			set_errno(EAFNOSUPPORT);
++			return EAFNOSUPPORT;
++		case WSA_IO_PENDING:
++		case WSATRY_AGAIN:
++			set_errno(EAGAIN);
++			return EAGAIN;
++		case WSAEWOULDBLOCK:
++			set_errno(EWOULDBLOCK);
++			return EWOULDBLOCK;
++		case WSAEMSGSIZE:
++			set_errno(E2BIG);
++			return E2BIG;
++		case WSAECONNRESET:
++			set_errno(0);
++			return 0;
++	}
++}
++
++#if _MSC_VER < 1300
++#define strtoll(p, e, b) ((*(e) = (char*)(p) + (((b) == 10) ? strspn((p), "0123456789") : 0)), _atoi64(p))
++#else
++#define strtoll(p, e, b) _strtoi64(p, e, b) 
++#endif
++
++
++#ifndef snprintf
++#define snprintf _snprintf
++#endif
++
++#ifndef strtoull
++#define strtoull strtoul
++#endif
++
++
++#endif
