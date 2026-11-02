@@ -247,7 +247,7 @@ char *do_suffix_from_freelist();
 bool do_suffix_add_to_freelist(char *s);
 char *do_defer_delete(item *item, time_t exptime);
 void do_run_deferred_deletes(void);
-char *do_add_delta(conn *c, item *item, const bool incr, const int64_t delta,
+char *do_add_delta(conn *c, item *item, const bool incr, const uint64_t delta,
                    char *buf);
 int do_store_item(item *item, int comm);
 conn *conn_new(const int sfd, const int init_state, const int event_flags, const int read_buffer_size, const bool is_udp, struct event_base *base);
@@ -279,7 +279,7 @@ int  dispatch_event_add(int thread, conn *c);
 void dispatch_conn_new(int sfd, int init_state, int event_flags, int read_buffer_size, int is_udp);
 
 /* Lock wrappers for cache functions that are called from main loop. */
-char *mt_add_delta(conn *c, item *item, const int incr, const int64_t delta,
+char *mt_add_delta(conn *c, item *item, const int incr, const uint64_t delta,
                    char *buf);
 void mt_assoc_move_next_bucket(void);
 void mt_accept_new_conns(const bool do_accept);

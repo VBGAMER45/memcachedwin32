@@ -175,7 +175,7 @@ static void stats_reset(void) {
 static void settings_init(void) {
     settings.access=0700;
     settings.port = 11211;
-    settings.udpport = 11211;
+    settings.udpport = 0;             /* UDP off by default: open UDP is a DDoS amplifier (CVE-2018-1000115) */
     /* By default this string should be NULL for getaddrinfo() */
     settings.inter = NULL;
     settings.maxbytes = 64 * 1024 * 1024; /* default is 64MB */
@@ -1021,6 +1021,77 @@ static void write_and_free(conn *c, char *buf, int bytes) {
     }
 }
 
+/*
+ * Strict base-10 parsing for client supplied numbers.  strtol() and friends
+ * accept trailing garbage and report overflow only through errno, which
+ * win32.h maps to the last Winsock error, so range checks never fired.
+ * Leading blanks, a sign and trailing whitespace (e.g. the "\r\n" at the end
+ * of item data) are allowed; anything else, or a value that doesn't fit,
+ * fails.
+ */
+static bool parse_number(const char *str, bool *negative, uint64_t *out) {
+    const char *p = str;
+    uint64_t val = 0;
+
+    while (*p == ' ' || *p == '\t')
+        p++;
+    *negative = (*p == '-');
+    if (*p == '-' || *p == '+')
+        p++;
+    if (*p < '0' || *p > '9')
+        return false;
+
+    for (; *p >= '0' && *p <= '9'; p++) {
+        unsigned int digit = *p - '0';
+        if (val > ((uint64_t)-1 - digit) / 10)
+            return false;
+        val = val * 10 + digit;
+    }
+
+    if (*p != '\0' && *p != ' ' && *p != '\t' && *p != '\r' && *p != '\n')
+        return false;
+
+    *out = val;
+    return true;
+}
+
+static bool safe_strtoull(const char *str, uint64_t *out) {
+    bool negative;
+    uint64_t val;
+
+    if (!parse_number(str, &negative, &val) || (negative && val != 0))
+        return false;
+    *out = val;
+    return true;
+}
+
+static bool safe_strtoul(const char *str, uint32_t *out) {
+    uint64_t val;
+
+    if (!safe_strtoull(str, &val) || val > 0xFFFFFFFFUL)
+        return false;
+    *out = (uint32_t)val;
+    return true;
+}
+
+static bool safe_strtol(const char *str, int32_t *out) {
+    bool negative;
+    uint64_t val;
+
+    if (!parse_number(str, &negative, &val))
+        return false;
+    if (negative) {
+        if (val > (uint64_t)INT_MAX + 1)
+            return false;
+        *out = (val == (uint64_t)INT_MAX + 1) ? INT_MIN : -(int32_t)val;
+    } else {
+        if (val > INT_MAX)
+            return false;
+        *out = (int32_t)val;
+    }
+    return true;
+}
+
 static inline void set_noreply_maybe(conn *c, token_t *tokens, size_t ntokens)
 {
     int noreply_index = ntokens - 2;
@@ -1196,10 +1267,8 @@ static void process_stat(conn *c, token_t *tokens, const size_t ntokens) {
             return;
         }
 
-        id = strtoul(tokens[2].value, NULL, 10);
-        limit = strtoul(tokens[3].value, NULL, 10);
-
-        if(errno == ERANGE) {
+        if (!safe_strtoul(tokens[2].value, &id) ||
+            !safe_strtoul(tokens[3].value, &limit)) {
             out_string(c, "CLIENT_ERROR bad command line format");
             return;
         }
@@ -1419,6 +1488,7 @@ static void process_update_command(conn *c, token_t *tokens, const size_t ntoken
     size_t nkey;
     int flags;
     time_t exptime;
+    int32_t exptime_int;
     int vlen, old_vlen;
     uint64_t req_cas_id;
     item *it, *old_it;
@@ -1435,18 +1505,26 @@ static void process_update_command(conn *c, token_t *tokens, const size_t ntoken
     key = tokens[KEY_TOKEN].value;
     nkey = tokens[KEY_TOKEN].length;
 
-    flags = strtoul(tokens[2].value, NULL, 10);
-    exptime = strtol(tokens[3].value, NULL, 10);
-    vlen = strtol(tokens[4].value, NULL, 10);
+    if (! (safe_strtoul(tokens[2].value, (uint32_t *)&flags)
+           && safe_strtol(tokens[3].value, &exptime_int)
+           && safe_strtol(tokens[4].value, (int32_t *)&vlen))) {
+        out_string(c, "CLIENT_ERROR bad command line format");
+        return;
+    }
+    exptime = exptime_int;
 
     // does cas value exist?
     if(handle_cas)
     {
-      req_cas_id = strtoull(tokens[5].value, NULL, 10);
+      if (!safe_strtoull(tokens[5].value, &req_cas_id)) {
+          out_string(c, "CLIENT_ERROR bad command line format");
+          return;
+      }
     }
 
-    if(errno == ERANGE || ((flags == 0 || exptime == 0) && errno == EINVAL)
-       || vlen < 0) {
+    /* vlen + 2 must not overflow: a negative length reaching the swallow
+       path below is handed to read() as a huge size, overflowing rbuf. */
+    if (vlen < 0 || vlen > (INT_MAX - 2)) {
         out_string(c, "CLIENT_ERROR bad command line format");
         return;
     }
@@ -1491,7 +1569,7 @@ static void process_update_command(conn *c, token_t *tokens, const size_t ntoken
 static void process_arithmetic_command(conn *c, token_t *tokens, const size_t ntokens, const bool incr) {
     char temp[sizeof("18446744073709551615")];
     item *it;
-    int64_t delta;
+    uint64_t delta;
     char *key;
     size_t nkey;
 
@@ -1507,10 +1585,8 @@ static void process_arithmetic_command(conn *c, token_t *tokens, const size_t nt
     key = tokens[KEY_TOKEN].value;
     nkey = tokens[KEY_TOKEN].length;
 
-    delta = strtoll(tokens[2].value, NULL, 10);
-
-    if(errno == ERANGE) {
-        out_string(c, "CLIENT_ERROR bad command line format");
+    if (!safe_strtoull(tokens[2].value, &delta)) {
+        out_string(c, "CLIENT_ERROR invalid numeric delta argument");
         return;
     }
 
@@ -1535,7 +1611,7 @@ static void process_arithmetic_command(conn *c, token_t *tokens, const size_t nt
  *
  * returns a response string to send back to the client.
  */
-char *do_add_delta(conn *c, item *it, const bool incr, const int64_t delta, char *buf) {
+char *do_add_delta(conn *c, item *it, const bool incr, const uint64_t delta, char *buf) {
     char *ptr;
     uint64_t value;
     int res;
@@ -1543,9 +1619,7 @@ char *do_add_delta(conn *c, item *it, const bool incr, const int64_t delta, char
     ptr = ITEM_data(it);
     while ((*ptr != '\0') && (*ptr < '0' && *ptr > '9')) ptr++;    // BUG: can't be true
 
-    value = strtoull(ptr, NULL, 10);
-
-    if(errno == ERANGE) {
+    if (!safe_strtoull(ptr, &value)) {
         return "CLIENT_ERROR cannot increment or decrement non-numeric value";
     }
 
@@ -1600,12 +1674,13 @@ static void process_delete_command(conn *c, token_t *tokens, const size_t ntoken
     }
 
     if(ntokens == (c->noreply ? 5 : 4)) {
-        exptime = strtol(tokens[2].value, NULL, 10);
+        int32_t exptime_int;
 
-        if(errno == ERANGE) {
+        if (!safe_strtol(tokens[2].value, &exptime_int)) {
             out_string(c, "CLIENT_ERROR bad command line format");
             return;
         }
+        exptime = exptime_int;
     }
 
     if (settings.detail_enabled) {
@@ -1739,6 +1814,7 @@ static void process_command(conn *c, char *command) {
 
     } else if (ntokens >= 2 && ntokens <= 4 && (strcmp(tokens[COMMAND_TOKEN].value, "flush_all") == 0)) {
         time_t exptime = 0;
+        int32_t exptime_int;
         set_current_time();
 
         set_noreply_maybe(c, tokens, ntokens);
@@ -1754,11 +1830,11 @@ static void process_command(conn *c, char *command) {
             return;
         }
 
-        exptime = strtol(tokens[1].value, NULL, 10);
-        if(errno == ERANGE) {
+        if (!safe_strtol(tokens[1].value, &exptime_int)) {
             out_string(c, "CLIENT_ERROR bad command line format");
             return;
         }
+        exptime = exptime_int;
 
         /*
           If exptime is zero realtime() would return zero too, and
@@ -1832,8 +1908,29 @@ static int try_read_command(conn *c) {
     if (c->rbytes == 0)
         return 0;
     el = memchr(c->rcurr, '\n', c->rbytes);
-    if (!el)
+    if (!el) {
+        if (c->rbytes > 1024) {
+            /*
+             * We didn't have a '\n' in the first k. This _has_ to be a
+             * large multiget, if not we should just nuke the connection
+             * rather than buffer an endless line (CVE-2010-1152).
+             */
+            char *ptr = c->rcurr;
+            while (ptr - c->rcurr < 100 && *ptr == ' ') { /* ignore leading whitespaces */
+                ++ptr;
+            }
+
+            if (ptr - c->rcurr >= 100 ||
+                (strncmp(ptr, "get ", 4) && strncmp(ptr, "gets ", 5) &&
+                 strncmp(ptr, "bget ", 5))) {
+
+                conn_set_state(c, conn_closing);
+                return 1;
+            }
+        }
+
         return 0;
+    }
     cont = el + 1;
     if ((el - c->rcurr) > 1 && *(el - 1) == '\r') {
         el--;
@@ -2705,7 +2802,7 @@ void do_run_deferred_deletes(void)
 static void usage(void) {
     printf(PACKAGE " " VERSION "\n");
     printf("-p <num>      TCP port number to listen on (default: 11211)\n"
-           "-U <num>      UDP port number to listen on (default: 11211, 0 is off)\n"
+           "-U <num>      UDP port number to listen on (default: 0, off)\n"
            "-s <file>     unix socket path to listen on (disables network support)\n"
            "-a <mask>     access mask for unix socket, in octal (default 0700)\n"
            "-l <ip_addr>  interface to listen on, default is INDRR_ANY\n");
@@ -2967,7 +3064,19 @@ int main (int argc, char **argv) {
             settings.socketpath = optarg;
             break;
         case 'm':
-            settings.maxbytes = ((size_t)atoi(optarg)) * 1024 * 1024;
+            {
+                uint32_t megabytes;
+
+                /* Reject values that would wrap size_t (e.g. -m 4096 on a
+                   32-bit build used to become 0, i.e. no limit at all). */
+                if (!safe_strtoul(optarg, &megabytes) ||
+                    megabytes > ((size_t)-1) / (1024 * 1024)) {
+                    fprintf(stderr, "Invalid value for -m: %s (max %lu)\n",
+                            optarg, (unsigned long)(((size_t)-1) / (1024 * 1024)));
+                    exit(EXIT_FAILURE);
+                }
+                settings.maxbytes = ((size_t)megabytes) * 1024 * 1024;
+            }
             break;
         case 'M':
             settings.evict_to_free = 0;
