@@ -513,7 +513,7 @@ char *mt_defer_delete(item *item, time_t exptime) {
 /*
  * Does arithmetic on a numeric item value.
  */
-char *mt_add_delta(conn *c, item *item, int incr, const int64_t delta,
+char *mt_add_delta(conn *c, item *item, int incr, const uint64_t delta,
                    char *buf) {
     char *ret;
 
